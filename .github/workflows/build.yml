@@ -6,7 +6,7 @@ permissions:
 env:
   TZ: Asia/Shanghai
   PACKAGE_NAME: luci-app-homeproxy
-  PACKAGE_VERSION: '1.12.171'                     # ← 请根据 releases 页更新
+  PACKAGE_VERSION: '1.12.171'
   SDK_URL: https://downloads.openwrt.org/releases/25.12.2/targets/x86/64/openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
   SDK_DIR: openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64
   REPO_URL: https://github.com/immortalwrt/homeproxy.git
@@ -40,26 +40,23 @@ jobs:
       - name: Add Feeds & Clone Source
         run: |
           cd ~/openwrt
-          # 添加 immortalwrt feeds 确保能解析到最新依赖
           echo "src-git immortalwrt_pkgs https://github.com/immortalwrt/packages.git;openwrt-25.12" >> feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
           mkdir -p package/custom
           git clone --depth 1 -b ${{ env.REPO_BRANCH }} ${{ env.REPO_URL }} package/custom/homeproxy
 
       - name: Configure
         run: |
           cd ~/openwrt
-          cat > .config << 'EOF'
-CONFIG_TARGET_x86=y
-CONFIG_TARGET_x86_64=y
-CONFIG_PACKAGE_luci-app-homeproxy=y
-# CONFIG_PACKAGE_sing-box is not set          ← 官方源已有，apk add 时会自动拉取，无需重复编译
-CONFIG_ALL_NONSHARED=n
-CONFIG_SIGNED_PACKAGES=n
-CONFIG_SIGNATURE_CHECK=n
-EOF
+          {
+            echo "CONFIG_TARGET_x86=y"
+            echo "CONFIG_TARGET_x86_64=y"
+            echo "CONFIG_PACKAGE_luci-app-homeproxy=y"
+            echo "CONFIG_ALL_NONSHARED=n"
+            echo "CONFIG_SIGNED_PACKAGES=n"
+            echo "CONFIG_SIGNATURE_CHECK=n"
+          } > .config
           make defconfig
 
       - name: Compile
@@ -70,9 +67,7 @@ EOF
       - name: Collect Artifacts
         run: |
           mkdir -p $GITHUB_WORKSPACE/output
-          find ~/openwrt/bin/packages/ -type f \
-            -name "*luci-app-homeproxy*.apk" \
-            -exec cp -f {} $GITHUB_WORKSPACE/output/ \; 2>/dev/null || true
+          find ~/openwrt/bin/packages/ -type f -name "*luci-app-homeproxy*.apk" -exec cp -f {} $GITHUB_WORKSPACE/output/ \; 2>/dev/null || true
           echo "=== output ==="
           ls -lh $GITHUB_WORKSPACE/output/
           PKG_FILE=$(ls $GITHUB_WORKSPACE/output/*.apk 2>/dev/null | head -1)
@@ -81,34 +76,29 @@ EOF
           fi
 
       - name: Create Release
-        if: success() && env.pkg_file != ''
+        if: success()
         run: |
           PKG_FILE="${{ env.pkg_file }}"
-          [ -f "$PKG_FILE" ] || { echo "ERROR: no .apk found"; exit 1; }
+          if [ -z "$PKG_FILE" ] || [ ! -f "$PKG_FILE" ]; then
+            echo "ERROR: no .apk found"
+            exit 1
+          fi
           PKG_NAME=$(basename "$PKG_FILE")
+          cat > /tmp/release_body.txt << 'EOF'
+          ## luci-app-homeproxy v${{ env.PACKAGE_VERSION }}
 
-          tee /tmp/release_body.txt << EOF
-## luci-app-homeproxy v${{ env.PACKAGE_VERSION }}
+          **Firmware:** OpenWrt 25.12.2
+          **Arch:** x86/64
+          **Package:** `${PKG_NAME}`
 
-**Firmware:** OpenWrt 25.12.2  
-**Arch:** x86/64  
-**Package:** \`${PKG_NAME}\`
-
-### 安装命令
-\`\`\`bash
-# 在线安装（自动拉取 sing-box 等依赖）
-apk add luci-app-homeproxy
-
-# 或离线安装（需确保系统已预装 sing-box/firewall4/kmod-nft-tproxy）
-apk add --allow-untrusted /tmp/${PKG_NAME}
-
-rm -f /tmp/luci-indexcache.*
-/etc/init.d/rpcd reload
-\`\`\`
-
-> 💡 官方 OpenWrt 25.12 软件源已包含兼容版 `sing-box`，`apk add` 会自动处理依赖。
-EOF
-
+          ### 安装命令
+          ```bash
+          apk add --allow-untrusted /tmp/${PKG_NAME}
+          rm -f /tmp/luci-indexcache.*
+          /etc/init.d/rpcd reload
+          ```
+          或通过 LuCI 后台上传安装。
+          EOF
           gh release delete "${{ github.ref_name }}" --yes 2>/dev/null || true
           gh release create "${{ github.ref_name }}" \
             --title "luci-app-homeproxy v${{ env.PACKAGE_VERSION }}" \
@@ -118,7 +108,9 @@ EOF
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cleanup SDK
-        run: rm -rf ~/openwrt && echo "SDK cleaned"
+        run: |
+          rm -rf ~/openwrt
+          echo "SDK cleaned"
 
       - name: Cleanup Releases
         uses: dev-drprasad/delete-older-releases@v0.3.4
