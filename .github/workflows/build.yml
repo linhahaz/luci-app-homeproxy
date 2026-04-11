@@ -1,0 +1,156 @@
+name: Build luci-app-homeproxy
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  TZ: Asia/Shanghai
+  PACKAGE_NAME: luci-app-homeproxy
+  PACKAGE_VERSION: '1.12.171'                     # ← 请根据 releases 页更新
+  SDK_URL: https://downloads.openwrt.org/releases/25.12.2/targets/x86/64/openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+  SDK_DIR: openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64
+  REPO_URL: https://github.com/immortalwrt/homeproxy.git
+  REPO_BRANCH: master
+
+jobs:
+  build:
+    name: Build luci-app-homeproxy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45                            # ← 依赖较多，延长超时
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download SDK
+        run: |
+          wget -q "${{ env.SDK_URL }}" -O sdk.tar.zst
+          tar -xf sdk.tar.zst -C ~
+          mv ~/${{ env.SDK_DIR }} ~/openwrt
+          rm sdk.tar.zst
+
+      - name: Setup Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ccache ecj fastjar file gawk gettext git \
+            libelf-dev libncurses5-dev libncursesw5-dev libssl-dev python3 python3-pip \
+            rsync subversion unzip wget xsltproc zip zlib1g-dev
+
+      - name: Add ImmortalWrt Feeds          # ← 关键：获取 sing-box/kmod-nft-tproxy
+        run: |
+          cd ~/openwrt
+          cat >> feeds.conf.default << 'EOF'
+src-git immortalwrt_core https://github.com/immortalwrt/immortalwrt.git;openwrt-25.12
+src-git immortalwrt_pkgs https://github.com/immortalwrt/packages.git;openwrt-25.12
+src-git immortalwrt_luci https://github.com/immortalwrt/luci.git;openwrt-25.12
+EOF
+
+      - name: Clone homeproxy & Update Feeds
+        run: |
+          cd ~/openwrt
+          mkdir -p package/custom
+          git clone --depth 1 -b ${{ env.REPO_BRANCH }} ${{ env.REPO_URL }} package/custom/homeproxy
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a -p immortalwrt_pkgs 2>/dev/null || true
+          ./scripts/feeds install -a 2>/dev/null || true
+
+      - name: Configure Build               # ← 启用所有必要依赖
+        run: |
+          cd ~/openwrt
+          cat > .config << 'EOF'
+CONFIG_TARGET_x86=y
+CONFIG_TARGET_x86_64=y
+CONFIG_DEVEL=y
+CONFIG_CCACHE=y
+CONFIG_PACKAGE_luci-app-homeproxy=y
+CONFIG_PACKAGE_sing-box=y
+CONFIG_PACKAGE_firewall4=y
+CONFIG_PACKAGE_kmod-nft-tproxy=y
+CONFIG_PACKAGE_ucode-mod-digest=y
+CONFIG_PACKAGE_kmod-nft-core=y
+CONFIG_PACKAGE_kmod-nf-tproxy=y
+CONFIG_PACKAGE_kmod-nf-conntrack=y
+CONFIG_ALL_NONSHARED=n
+CONFIG_SIGNED_PACKAGES=n
+CONFIG_SIGNATURE_CHECK=n
+EOF
+          make defconfig
+
+      - name: Compile Package
+        run: |
+          cd ~/openwrt
+          # 先编译依赖（sing-box 等），再编译 luci-app-homeproxy
+          make package/feeds/immortalwrt_pkgs/sing-box/compile V=s -j$(nproc) || true
+          make package/custom/homeproxy/luci-app-homeproxy/compile V=s -j$(nproc)
+
+      - name: Collect Artifacts
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/output
+          find ~/openwrt/bin/packages/ -type f \
+            -name "*luci-app-homeproxy*.apk" \
+            -exec cp -f {} $GITHUB_WORKSPACE/output/ \; 2>/dev/null || true
+          echo "=== Output files ==="
+          ls -lh $GITHUB_WORKSPACE/output/ || true
+          PKG_FILE=$(ls $GITHUB_WORKSPACE/output/*luci-app-homeproxy*.apk 2>/dev/null | head -1)
+          if [ -n "$PKG_FILE" ]; then
+            echo "pkg_file=${PKG_FILE}" >> $GITHUB_ENV
+          fi
+
+      - name: Create Release
+        if: success() && env.pkg_file != ''
+        run: |
+          PKG_FILE="${{ env.pkg_file }}"
+          [ -f "$PKG_FILE" ] || { echo "ERROR: APK not found"; exit 1; }
+          PKG_NAME=$(basename "$PKG_FILE")
+
+          tee /tmp/release_body.txt << EOF
+## luci-app-homeproxy v${{ env.PACKAGE_VERSION }}
+
+**Firmware**: OpenWrt 25.12.2  
+**Arch**: x86/64  
+**Package**: \`${PKG_NAME}\`
+
+### 依赖项（需提前安装）
+- sing-box
+- firewall4
+- kmod-nft-tproxy
+- ucode-mod-digest
+
+### 安装命令
+\`\`\`bash
+# 1. 先安装依赖（如未安装）
+apk add sing-box firewall4 kmod-nft-tproxy ucode-mod-digest
+
+# 2. 安装本包
+apk add --allow-untrusted /tmp/${PKG_NAME}
+
+# 3. 清理缓存并重启服务
+rm -f /tmp/luci-indexcache.*
+/etc/init.d/rpcd reload
+/etc/init.d/homeproxy restart
+\`\`\`
+
+> 💡 也可通过 LuCI → 系统 → 软件包 → 上传安装
+EOF
+
+          gh release delete "${{ github.ref_name }}" --yes 2>/dev/null || true
+          gh release create "${{ github.ref_name }}" \
+            --title "luci-app-homeproxy v${{ env.PACKAGE_VERSION }}" \
+            --notes-file /tmp/release_body.txt \
+            -- \
+            "$PKG_FILE"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup SDK
+        run: rm -rf ~/openwrt && echo "SDK cleaned"
+
+      - name: Cleanup Old Releases
+        uses: dev-drprasad/delete-older-releases@v0.3.4
+        with:
+          keep_latest: 10
+          delete_tags: true
+          repo: ${{ github.repository }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
