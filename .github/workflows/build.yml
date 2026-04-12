@@ -53,6 +53,7 @@ jobs:
             echo "CONFIG_TARGET_x86=y"
             echo "CONFIG_TARGET_x86_64=y"
             echo "CONFIG_PACKAGE_luci-app-homeproxy=y"
+            echo "CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y"
             echo "CONFIG_ALL_NONSHARED=n"
             echo "CONFIG_SIGNED_PACKAGES=n"
             echo "CONFIG_SIGNATURE_CHECK=n"
@@ -67,43 +68,50 @@ jobs:
       - name: Collect Artifacts
         run: |
           mkdir -p $GITHUB_WORKSPACE/output
-          find ~/openwrt/bin/packages/ -type f -name "*luci-app-homeproxy*.apk" -exec cp -f {} $GITHUB_WORKSPACE/output/ \; 2>/dev/null || true
+          find ~/openwrt/bin/packages/ -type f -name "*homeproxy*.apk" -exec cp -f {} $GITHUB_WORKSPACE/output/ \; 2>/dev/null || true
           echo "=== output ==="
           ls -lh $GITHUB_WORKSPACE/output/
-          PKG_FILE=$(ls $GITHUB_WORKSPACE/output/*.apk 2>/dev/null | head -1)
-          if [ -n "$PKG_FILE" ]; then
-            echo "pkg_file=${PKG_FILE}" >> $GITHUB_ENV
-          fi
+          PKG_FILE=$(ls $GITHUB_WORKSPACE/output/*luci-app-homeproxy_*_all.apk 2>/dev/null | head -1)
+          I18N_FILE=$(ls $GITHUB_WORKSPACE/output/*luci-i18n-homeproxy-zh-cn*.apk 2>/dev/null | head -1)
+          [ -n "$PKG_FILE" ] && echo "pkg_file=${PKG_FILE}" >> $GITHUB_ENV
+          [ -n "$I18N_FILE" ] && echo "i18n_file=${I18N_FILE}" >> $GITHUB_ENV
 
       - name: Create Release
         if: success()
         run: |
           PKG_FILE="${{ env.pkg_file }}"
-          if [ -z "$PKG_FILE" ] || [ ! -f "$PKG_FILE" ]; then
-            echo "ERROR: no .apk found"
-            exit 1
-          fi
+          I18N_FILE="${{ env.i18n_file }}"
+          [ -z "$PKG_FILE" ] || [ ! -f "$PKG_FILE" ] && { echo "ERROR: main apk not found"; exit 1; }
+          
           PKG_NAME=$(basename "$PKG_FILE")
-          cat > /tmp/release_body.txt << 'EOF'
-          ## luci-app-homeproxy v${{ env.PACKAGE_VERSION }}
-
-          **Firmware:** OpenWrt 25.12.2
-          **Arch:** x86/64
-          **Package:** `${PKG_NAME}`
-
+          I18N_NAME=$(basename "$I18N_FILE" 2>/dev/null || echo "")
+          
+          RELEASE_BODY="## luci-app-homeproxy v${{ env.PACKAGE_VERSION }}
+          
+          **Firmware:** OpenWrt 25.12.2  
+          **Arch:** x86/64  
+          **Package:** \`${PKG_NAME}\`
+          $([ -n "$I18N_NAME" ] && echo "**中文包:** \`${I18N_NAME}\`")
+          
           ### 安装命令
-          ```bash
+          
+          \`\`\`bash
           apk add --allow-untrusted /tmp/${PKG_NAME}
+          $([ -n "$I18N_NAME" ] && echo "apk add --allow-untrusted /tmp/${I18N_NAME}")
+          
           rm -f /tmp/luci-indexcache.*
           /etc/init.d/rpcd reload
-          ```
-          或通过 LuCI 后台上传安装。
-          EOF
+          \`\`\`
+          
+          或通过 LuCI 后台上传安装。"
+          
+          echo "$RELEASE_BODY" > /tmp/release_body.txt
+          
           gh release delete "${{ github.ref_name }}" --yes 2>/dev/null || true
           gh release create "${{ github.ref_name }}" \
             --title "luci-app-homeproxy v${{ env.PACKAGE_VERSION }}" \
             --notes-file /tmp/release_body.txt \
-            -- "$PKG_FILE"
+            -- "$PKG_FILE" $([ -n "$I18N_FILE" ] && [ -f "$I18N_FILE" ] && echo "$I18N_FILE")
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
