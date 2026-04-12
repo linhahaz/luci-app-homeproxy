@@ -6,7 +6,7 @@ permissions:
 env:
   TZ: Asia/Shanghai
   PACKAGE_NAME: luci-app-homeproxy
-  PACKAGE_VERSION: '1.12.171'
+  PACKAGE_VERSION: '26.071.13677~ec92da1'
   SDK_URL: https://downloads.openwrt.org/releases/25.12.2/targets/x86/64/openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
   SDK_DIR: openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64
   REPO_URL: https://github.com/immortalwrt/homeproxy.git
@@ -63,91 +63,85 @@ jobs:
       - name: Compile
         run: |
           cd ~/openwrt
-          # 先尝试编译主包子目录，失败则回退到父目录
           make package/custom/homeproxy/luci-app-homeproxy/compile V=s -j$(nproc) || \
           make package/custom/homeproxy/compile V=s -j$(nproc)
 
       - name: Collect Artifacts
+        id: collect
         run: |
           mkdir -p $GITHUB_WORKSPACE/output
-          # 收集所有 homeproxy 相关 apk
           find ~/openwrt/bin/packages/ -type f -name "*homeproxy*.apk" -exec cp -f {} $GITHUB_WORKSPACE/output/ \; 2>/dev/null || true
           
-          echo "=== All collected files ==="
+          echo "=== Collected files ==="
           ls -lh $GITHUB_WORKSPACE/output/
           
-          # 智能筛选：主包 = 含 luci-app-homeproxy 且 不含 i18n
-          PKG_FILE=""
-          for f in $GITHUB_WORKSPACE/output/*luci-app-homeproxy*.apk; do
-            [ -f "$f" ] || continue
-            echo "$f" | grep -q "i18n" && continue
-            PKG_FILE="$f"
-            break
-          done
-          
-          # 中文包：含 i18n 且含 zh-cn
+          # 使用 outputs 传递文件路径（比 $GITHUB_ENV 更可靠）
+          MAIN_FILE=""
           I18N_FILE=""
-          for f in $GITHUB_WORKSPACE/output/*luci-i18n-homeproxy-zh-cn*.apk; do
-            [ -f "$f" ] && I18N_FILE="$f" && break
+          for f in $GITHUB_WORKSPACE/output/*.apk; do
+            [ -f "$f" ] || continue
+            case "$(basename "$f")" in
+              *luci-i18n-homeproxy-zh-cn*) I18N_FILE="$f" ;;
+              *luci-app-homeproxy*) 
+                [ -z "$MAIN_FILE" ] && MAIN_FILE="$f" 
+                ;;
+            esac
           done
           
-          [ -n "$PKG_FILE" ] && echo "pkg_file=${PKG_FILE}" >> $GITHUB_ENV && echo "✓ Found main: $PKG_FILE"
-          [ -n "$I18N_FILE" ] && echo "i18n_file=${I18N_FILE}" >> $GITHUB_ENV && echo "✓ Found i18n: $I18N_FILE"
-          
-          # 调试：若未找到主包，列出所有候选文件
-          [ -z "$PKG_FILE" ] && {
-            echo "⚠ WARNING: main apk not found, candidates:"
-            ls -1 $GITHUB_WORKSPACE/output/*.apk 2>/dev/null || echo "  (no .apk files)"
-          }
+          [ -n "$MAIN_FILE" ] && echo "main_file=$MAIN_FILE" >> $GITHUB_OUTPUT
+          [ -n "$I18N_FILE" ] && echo "i18n_file=$I18N_FILE" >> $GITHUB_OUTPUT
+          echo "main=$MAIN_FILE"
+          echo "i18n=$I18N_FILE"
 
       - name: Create Release
-        if: success()
+        if: success() && steps.collect.outputs.main_file != ''
         run: |
-          PKG_FILE="${{ env.pkg_file }}"
-          I18N_FILE="${{ env.i18n_file }}"
+          set -euo pipefail
           
-          if [ -z "$PKG_FILE" ] || [ ! -f "$PKG_FILE" ]; then
-            echo "❌ ERROR: main apk not found"
-            echo "Available files in output:"
-            ls -la $GITHUB_WORKSPACE/output/ 2>/dev/null || echo "(empty)"
-            exit 1
-          fi
+          MAIN_FILE="${{ steps.collect.outputs.main_file }}"
+          I18N_FILE="${{ steps.collect.outputs.i18n_file }}"
           
-          PKG_NAME=$(basename "$PKG_FILE")
+          # 使用 basename 获取纯文件名，避免路径解析问题
+          MAIN_NAME=$(basename -- "$MAIN_FILE")
           I18N_NAME=""
-          [ -n "$I18N_FILE" ] && [ -f "$I18N_FILE" ] && I18N_NAME=$(basename "$I18N_FILE")
+          [ -n "$I18N_FILE" ] && [ -f "$I18N_FILE" ] && I18N_NAME=$(basename -- "$I18N_FILE")
           
-          # 生成 Release 正文（使用 printf 避免 heredoc 解析问题）
-          printf '%s\n' \
-            "## luci-app-homeproxy v${{ env.PACKAGE_VERSION }}" \
-            "" \
-            "**Firmware:** OpenWrt 25.12.2" \
-            "**Arch:** x86/64" \
-            "**Package:** \`${PKG_NAME}\`" \
-            "$([ -n "$I18N_NAME" ] && echo "**中文包:** \`${I18N_NAME}\`")" \
-            "" \
-            "### 安装命令" \
-            "" \
-            '```bash' \
-            "apk add --allow-untrusted /tmp/${PKG_NAME}" \
-            "$([ -n "$I18N_NAME" ] && echo "apk add --allow-untrusted /tmp/${I18N_NAME}")" \
-            "" \
-            "rm -f /tmp/luci-indexcache.*" \
-            "/etc/init.d/rpcd reload" \
-            '```' \
-            "" \
-            "或通过 LuCI 后台上传安装。" \
-            > /tmp/release_body.txt
+          # 生成 Release 正文（使用纯 echo，避免 heredoc/printf 陷阱）
+          {
+            echo "## luci-app-homeproxy v${{ env.PACKAGE_VERSION }}"
+            echo ""
+            echo "**Firmware:** OpenWrt 25.12.2"
+            echo "**Arch:** x86/64"
+            echo "**Package:** \`$MAIN_NAME\`"
+            [ -n "$I18N_NAME" ] && echo "**中文包:** \`$I18N_NAME\`"
+            echo ""
+            echo "### 安装命令"
+            echo ""
+            echo '```bash'
+            echo "apk add --allow-untrusted /tmp/$MAIN_NAME"
+            [ -n "$I18N_NAME" ] && echo "apk add --allow-untrusted /tmp/$I18N_NAME"
+            echo ""
+            echo "rm -f /tmp/luci-indexcache.*"
+            echo "/etc/init.d/rpcd reload"
+            echo '```'
+            echo ""
+            echo "或通过 LuCI 后台上传安装。"
+          } > /tmp/release_body.txt
           
-          # 构建上传参数
-          UPLOAD_FILES="$PKG_FILE"
-          [ -n "$I18N_FILE" ] && [ -f "$I18N_FILE" ] && UPLOAD_FILES="$UPLOAD_FILES $I18N_FILE"
-          
+          # 上传文件：使用数组方式传递，避免空格/特殊字符问题
           gh release delete "${{ github.ref_name }}" --yes 2>/dev/null || true
-          gh release create "${{ github.ref_name }}" \
-            --title "luci-app-homeproxy v${{ env.PACKAGE_VERSION }}" \
-            --notes-file /tmp/release_body.txt \
-            -- $UPLOAD_FILES
+          
+          if [ -n "$I18N_NAME" ] && [ -f "$I18N_FILE" ]; then
+            gh release create "${{ github.ref_name }}" \
+              --title "luci-app-homeproxy v${{ env.PACKAGE_VERSION }}" \
+              --notes-file /tmp/release_body.txt \
+              -- "$MAIN_FILE" "$I18N_FILE"
+          else
+            gh release create "${{ github.ref_name }}" \
+              --title "luci-app-homeproxy v${{ env.PACKAGE_VERSION }}" \
+              --notes-file /tmp/release_body.txt \
+              -- "$MAIN_FILE"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
