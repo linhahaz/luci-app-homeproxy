@@ -11,7 +11,7 @@ env:
   SDK_URL: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
   SDK_DIR: openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64
   REPO_URL: https://github.com/VIKINGYFY/homeproxy.git
-  REPO_BRANCH: master
+  REPO_BRANCH: main
 
 jobs:
   build:
