@@ -1,4 +1,4 @@
-name: Build luci-app-homeproxy
+name: Build luci-app-homeproxy (24.10 IPK Version)
 on:
   workflow_dispatch:
 permissions:
@@ -6,11 +6,12 @@ permissions:
 env:
   TZ: Asia/Shanghai
   PACKAGE_NAME: luci-app-homeproxy
-  PACKAGE_VERSION: '26.090.13688~7172132'
-  SDK_URL: https://downloads.openwrt.org/releases/25.12.2/targets/x86/64/openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-  SDK_DIR: openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64
+  PACKAGE_VERSION: '26.071.13677~7172132'
+  # 使用 ImmortalWrt 24.10 的 SDK，完美匹配 24.10 内核且原生输出 .ipk
+  SDK_URL: https://downloads.immortalwrt.org/releases/24.10.0/targets/x86/64/immortalwrt-sdk-24.10.0-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.xz
+  SDK_DIR: immortalwrt-sdk-24.10.0-x86-64_gcc-13.3.0_musl.Linux-x86_64
   REPO_URL: https://github.com/VIKINGYFY/homeproxy.git
-  REPO_BRANCH: main
+  REPO_BRANCH: master
 
 jobs:
   build:
@@ -25,10 +26,10 @@ jobs:
 
       - name: Download SDK
         run: |
-          wget -q "${{ env.SDK_URL }}" -O sdk.tar.zst
-          tar -xf sdk.tar.zst -C ~
+          wget -q "${{ env.SDK_URL }}" -O sdk.tar.xz
+          tar -xf sdk.tar.xz -C ~
           mv ~/${{ env.SDK_DIR }} ~/openwrt
-          rm sdk.tar.zst
+          rm sdk.tar.xz
 
       - name: Setup Environment
         run: |
@@ -40,7 +41,8 @@ jobs:
       - name: Add Feeds & Clone Source
         run: |
           cd ~/openwrt
-          echo "src-git immortalwrt_pkgs https://github.com/immortalwrt/packages.git;openwrt-25.12" >> feeds.conf.default
+          # 指定 24.10 分支依赖
+          echo "src-git immortalwrt_pkgs https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           mkdir -p package/custom
@@ -70,15 +72,12 @@ jobs:
         id: collect
         run: |
           mkdir -p $GITHUB_WORKSPACE/output
-          find ~/openwrt/bin/packages/ -type f -name "*homeproxy*.apk" -exec cp -f {} $GITHUB_WORKSPACE/output/ \; 2>/dev/null || true
+          # 收集 .ipk 文件
+          find ~/openwrt/bin/packages/ -type f -name "*homeproxy*.ipk" -exec cp -f {} $GITHUB_WORKSPACE/output/ \; 2>/dev/null || true
           
-          echo "=== Collected files ==="
-          ls -lh $GITHUB_WORKSPACE/output/
-          
-          # 使用 outputs 传递文件路径（比 $GITHUB_ENV 更可靠）
           MAIN_FILE=""
           I18N_FILE=""
-          for f in $GITHUB_WORKSPACE/output/*.apk; do
+          for f in $GITHUB_WORKSPACE/output/*.ipk; do
             [ -f "$f" ] || continue
             case "$(basename "$f")" in
               *luci-i18n-homeproxy-zh-cn*) I18N_FILE="$f" ;;
@@ -90,8 +89,6 @@ jobs:
           
           [ -n "$MAIN_FILE" ] && echo "main_file=$MAIN_FILE" >> $GITHUB_OUTPUT
           [ -n "$I18N_FILE" ] && echo "i18n_file=$I18N_FILE" >> $GITHUB_OUTPUT
-          echo "main=$MAIN_FILE"
-          echo "i18n=$I18N_FILE"
 
       - name: Create Release
         if: success() && steps.collect.outputs.main_file != ''
@@ -101,16 +98,14 @@ jobs:
           MAIN_FILE="${{ steps.collect.outputs.main_file }}"
           I18N_FILE="${{ steps.collect.outputs.i18n_file }}"
           
-          # 使用 basename 获取纯文件名，避免路径解析问题
           MAIN_NAME=$(basename -- "$MAIN_FILE")
           I18N_NAME=""
           [ -n "$I18N_FILE" ] && [ -f "$I18N_FILE" ] && I18N_NAME=$(basename -- "$I18N_FILE")
           
-          # 生成 Release 正文（使用纯 echo，避免 heredoc/printf 陷阱）
           {
             echo "## luci-app-homeproxy v${{ env.PACKAGE_VERSION }}"
             echo ""
-            echo "**Firmware:** OpenWrt 25.12.2"
+            echo "**Firmware:** 第三方/ImmortalWrt 24.10 专用"
             echo "**Arch:** x86/64"
             echo "**Package:** \`$MAIN_NAME\`"
             [ -n "$I18N_NAME" ] && echo "**中文包:** \`$I18N_NAME\`"
@@ -118,17 +113,16 @@ jobs:
             echo "### 安装命令"
             echo ""
             echo '```bash'
-            echo "apk add --allow-untrusted /tmp/$MAIN_NAME"
-            [ -n "$I18N_NAME" ] && echo "apk add --allow-untrusted /tmp/$I18N_NAME"
+            echo "opkg install /tmp/$MAIN_NAME"
+            [ -n "$I18N_NAME" ] && echo "opkg install /tmp/$I18N_NAME"
             echo ""
             echo "rm -f /tmp/luci-indexcache.*"
             echo "/etc/init.d/rpcd reload"
             echo '```'
             echo ""
-            echo "或通过 LuCI 后台上传安装。"
+            echo "或通过 LuCI 后台 (系统 -> 软件包) 上传安装。"
           } > /tmp/release_body.txt
           
-          # 上传文件：使用数组方式传递，避免空格/特殊字符问题
           gh release delete "${{ github.ref_name }}" --yes 2>/dev/null || true
           
           if [ -n "$I18N_NAME" ] && [ -f "$I18N_FILE" ]; then
@@ -148,7 +142,6 @@ jobs:
       - name: Cleanup SDK
         run: |
           rm -rf ~/openwrt
-          echo "SDK cleaned"
 
       - name: Cleanup Releases
         uses: dev-drprasad/delete-older-releases@v0.3.4
