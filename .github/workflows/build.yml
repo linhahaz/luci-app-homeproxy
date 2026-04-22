@@ -6,11 +6,11 @@ permissions:
 env:
   TZ: Asia/Shanghai
   PACKAGE_NAME: luci-app-homeproxy
-  PACKAGE_VERSION: '26.071.13677~7172132'
+  PACKAGE_VERSION: '26.090.13688~7172132'
   SDK_URL: https://downloads.openwrt.org/releases/25.12.2/targets/x86/64/openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
   SDK_DIR: openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64
   REPO_URL: https://github.com/VIKINGYFY/homeproxy.git
-  REPO_BRANCH: master
+  REPO_BRANCH: main
 
 jobs:
   build:
