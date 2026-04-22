@@ -1,4 +1,4 @@
-name: Build luci-app-homeproxy (24.10 IPK Version)
+name: Build luci-app-homeproxy (IPK Version)
 on:
   workflow_dispatch:
 permissions:
@@ -7,9 +7,9 @@ env:
   TZ: Asia/Shanghai
   PACKAGE_NAME: luci-app-homeproxy
   PACKAGE_VERSION: '26.071.13677~7172132'
-  # 使用 ImmortalWrt 24.10 的 SDK，完美匹配 24.10 内核且原生输出 .ipk
-  SDK_URL: https://downloads.immortalwrt.org/releases/24.10.0/targets/x86/64/immortalwrt-sdk-24.10.0-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.xz
-  SDK_DIR: immortalwrt-sdk-24.10.0-x86-64_gcc-13.3.0_musl.Linux-x86_64
+  # 替换为 23.05.5 的 SDK
+  SDK_URL: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+  SDK_DIR: openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64
   REPO_URL: https://github.com/VIKINGYFY/homeproxy.git
   REPO_BRANCH: master
 
@@ -26,6 +26,7 @@ jobs:
 
       - name: Download SDK
         run: |
+          # 23.05 使用的是 .xz 格式
           wget -q "${{ env.SDK_URL }}" -O sdk.tar.xz
           tar -xf sdk.tar.xz -C ~
           mv ~/${{ env.SDK_DIR }} ~/openwrt
@@ -41,8 +42,8 @@ jobs:
       - name: Add Feeds & Clone Source
         run: |
           cd ~/openwrt
-          # 指定 24.10 分支依赖
-          echo "src-git immortalwrt_pkgs https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          # 匹配 23.05 分支的依赖源
+          echo "src-git immortalwrt_pkgs https://github.com/immortalwrt/packages.git;openwrt-23.05" >> feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           mkdir -p package/custom
@@ -72,11 +73,15 @@ jobs:
         id: collect
         run: |
           mkdir -p $GITHUB_WORKSPACE/output
-          # 收集 .ipk 文件
+          # 修改为寻找 .ipk 文件
           find ~/openwrt/bin/packages/ -type f -name "*homeproxy*.ipk" -exec cp -f {} $GITHUB_WORKSPACE/output/ \; 2>/dev/null || true
+          
+          echo "=== Collected files ==="
+          ls -lh $GITHUB_WORKSPACE/output/
           
           MAIN_FILE=""
           I18N_FILE=""
+          # 修改为遍历 .ipk
           for f in $GITHUB_WORKSPACE/output/*.ipk; do
             [ -f "$f" ] || continue
             case "$(basename "$f")" in
@@ -105,7 +110,7 @@ jobs:
           {
             echo "## luci-app-homeproxy v${{ env.PACKAGE_VERSION }}"
             echo ""
-            echo "**Firmware:** 第三方/ImmortalWrt 24.10 专用"
+            echo "**Firmware:** OpenWrt 23.05.5"
             echo "**Arch:** x86/64"
             echo "**Package:** \`$MAIN_NAME\`"
             [ -n "$I18N_NAME" ] && echo "**中文包:** \`$I18N_NAME\`"
@@ -113,6 +118,7 @@ jobs:
             echo "### 安装命令"
             echo ""
             echo '```bash'
+            # 修改为 opkg 命令
             echo "opkg install /tmp/$MAIN_NAME"
             [ -n "$I18N_NAME" ] && echo "opkg install /tmp/$I18N_NAME"
             echo ""
@@ -142,6 +148,7 @@ jobs:
       - name: Cleanup SDK
         run: |
           rm -rf ~/openwrt
+          echo "SDK cleaned"
 
       - name: Cleanup Releases
         uses: dev-drprasad/delete-older-releases@v0.3.4
